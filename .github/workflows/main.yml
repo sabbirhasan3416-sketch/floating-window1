@@ -1,44 +1,89 @@
-name: Build Android APK
+name: Android Overlay Build Pipeline
 
 on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
+    name: Compile & Launch Release
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Java JDK 17
         uses: actions/setup-java@v4
         with:
+          distribution: 'zulu'
           java-version: '17'
-          distribution: 'temurin'
 
-      - name: Find and Build Android Project
+      - name: Cache Gradle Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install System Gradle & Regenerate Wrapper
         run: |
-          # পুরো রিপোজিটরিতে gradlew ফাইলটি কোথায় আছে তা খুঁজে বের করবে
-          GRADLEW_PATH=$(find . -name "gradlew" -print -quit)
-          
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "❌ Error: gradlew file not found anywhere in the repository!"
-            exit 1
-          fi
-          
-          # গ্র্যাডল ফাইলের মেইন ফোল্ডারে প্রবেশ করা
-          PROJECT_DIR=$(dirname "$GRADLEW_PATH")
-          cd "$PROJECT_DIR"
-          
-          echo "📂 Found project in: $PROJECT_DIR"
+          sudo apt-get update
+          sudo apt-get install -y gradle
+          # Regenerate gradle wrapper files to bypass any missing gradle-wrapper.jar errors
+          gradle wrapper --gradle-version 8.7
           chmod +x gradlew
-          
-          echo "🚀 Starting Gradle Build..."
-          ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Build Debug Android Package (APK)
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Locate Compiled Artifact
+        run: |
+          echo "Listing generated APK deliverables:"
+          find app/build/outputs/apk/ -name "*.apk"
+
+      - name: Create Workstation Deployment Uploads
         uses: actions/upload-artifact@v4
         with:
-          name: floating-window-debug-apk
-          path: "**/build/outputs/apk/debug/*.apk"
+          name: floating-overlay-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Generate Dynamic Tags and Release Meta
+        id: meta
+        run: |
+          TAG_NAME="v1.0.${{ github.run_number }}"
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Push Git Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Floating Window Release ${{ env.TAG_NAME }}
+          body: |
+            Automatic GitHub Actions compilation deliverable.
+            
+            ### Features Built in this Release:
+            - **Premium Cosmic Dark UI**: Stunning dark background with pulsing service status lights.
+            - **Multitask Overlay Window**: Smooth drag gestures, minimize-to-bubble, and system activity monitoring.
+            - **Inline Sticky Pad**: Easy notes jotting with a toggle window input system.
+            - **Hardware diagnostics**: Displays CPU/RAM uptime telemetry seamlessly above other apps.
+            
+            ### Package Asset downloads:
+            Download **`app-debug.apk`** below to run it directly on your Android device.
+          files: app/build/outputs/apk/debug/app-debug.apk
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
